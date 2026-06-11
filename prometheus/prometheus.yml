@@ -1,0 +1,34 @@
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: "vetra-api"
+    metrics_path: /q/metrics
+    static_configs:
+      - targets: ["backend:8080"]
+
+  - job_name: "keycloak"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["keycloak:8080"]
+
+  - job_name: "minio"
+    metrics_path: /minio/v2/metrics/cluster
+    static_configs:
+      - targets: ["minio:9000"]
+
+  - job_name: "loki"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["loki:3100"]
+
+  - job_name: "tempo"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["tempo:3200"]
+
+  - job_name: "promtail"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["promtail:9080"]

@@ -1,0 +1,20 @@
+# Environment / secrets
+.env
+.env.*
+!.env.prod.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Certbot data (generated on server)
+certbot/
+
+# Claude
+.claude/

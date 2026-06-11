@@ -1,0 +1,336 @@
+# =============================================================================
+# Vetra — Production Docker Compose
+# Target: Single EC2 instance
+# Usage: docker compose up -d
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: vetra-prod-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-vetra}
+      POSTGRES_USER: ${POSTGRES_USER:-vetra}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - vetra-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vetra} -d ${POSTGRES_DB:-vetra}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - vetra-network
+
+  # ---------------------------------------------------------------------------
+  # Keycloak (Identity Provider — Production Mode)
+  # ---------------------------------------------------------------------------
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    container_name: vetra-prod-keycloak
+    restart: unless-stopped
+    command: start --import-realm --proxy-headers=xforwarded --hostname-strict=false
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-vetra}
+      KC_DB_USERNAME: ${POSTGRES_USER:-vetra}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - vetra-network
+
+  # ---------------------------------------------------------------------------
+  # MinIO (S3-compatible Object Storage)
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    container_name: vetra-prod-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - vetra-minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - vetra-network
+
+  # ---------------------------------------------------------------------------
+  # OpenTelemetry Collector
+  # ---------------------------------------------------------------------------
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: vetra-prod-otel-collector
+    restart: unless-stopped
+    command: ["--config=/etc/otel-collector.yml"]
+    volumes:
+      - ./otel-collector/otel-collector.yml:/etc/otel-collector.yml:ro
+    depends_on:
+      - tempo
+      - loki
+      - prometheus
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    networks:
+      - vetra-network
+
+  # ---------------------------------------------------------------------------
+  # Grafana Tempo (Distributed Tracing Backend)
+  # ---------------------------------------------------------------------------
+  tempo:
+    image: grafana/tempo:latest
+    container_name: vetra-prod-tempo
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo.yml"]
+    volumes:
+      - ./tempo/tempo.yml:/etc/tempo.yml:ro
+      - vetra-tempo-data:/var/tempo
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - vetra-network
+
+  # ---------------------------------------------------------------------------
+  # Prometheus (Metrics)
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: vetra-prod-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - vetra-prometheus-data:/prometheus
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - vetra-network
+
+  # ---------------------------------------------------------------------------
+  # Grafana Loki (Log Aggregation)
+  # ---------------------------------------------------------------------------
+  loki:
+    image: grafana/loki:latest
+    container_name: vetra-prod-loki
+    restart: unless-stopped
+    volumes:
+      - vetra-loki-data:/loki
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - vetra-network
+
+  # ---------------------------------------------------------------------------
+  # Promtail (Log Shipper → Loki)
+  # ---------------------------------------------------------------------------
+  promtail:
+    image: grafana/promtail:latest
+    container_name: vetra-prod-promtail
+    restart: unless-stopped
+    command: ["-config.file=/etc/promtail/promtail.yml"]
+    volumes:
+      - ./promtail/promtail.yml:/etc/promtail/promtail.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+    networks:
+      - vetra-network
+
+  # ---------------------------------------------------------------------------
+  # Backend (Quarkus Reactive API — from ghcr.io)
+  # ---------------------------------------------------------------------------
+  backend:
+    image: ghcr.io/core-tech-development/vetra-api:latest
+    container_name: vetra-prod-backend
+    restart: unless-stopped
+    environment:
+      QUARKUS_PROFILE: prod
+      DB_REACTIVE_URL: postgresql://postgres:5432/${POSTGRES_DB:-vetra}
+      DB_JDBC_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-vetra}
+      DB_USERNAME: ${POSTGRES_USER:-vetra}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      OIDC_AUTH_SERVER_URL: http://keycloak:8080/realms/vetra
+      OIDC_TOKEN_ISSUER: https://auth.vetra.vet.br/realms/vetra
+      KEYCLOAK_ADMIN_URL: http://keycloak:8080
+      KEYCLOAK_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
+      minio:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    networks:
+      - vetra-network
+
+  # ---------------------------------------------------------------------------
+  # Frontend Portal (from ghcr.io)
+  # ---------------------------------------------------------------------------
+  frontend:
+    image: ghcr.io/core-tech-development/vetra-portal:latest
+    container_name: vetra-prod-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+    networks:
+      - vetra-network
+
+  # ---------------------------------------------------------------------------
+  # Frontend Landing (from ghcr.io)
+  # ---------------------------------------------------------------------------
+  landing:
+    image: ghcr.io/core-tech-development/vetra-landing:latest
+    container_name: vetra-prod-landing
+    restart: unless-stopped
+    depends_on:
+      - backend
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+    networks:
+      - vetra-network
+
+  # ---------------------------------------------------------------------------
+  # Nginx (Reverse Proxy — Only Exposed Service)
+  # ---------------------------------------------------------------------------
+  nginx:
+    image: nginx:alpine
+    container_name: vetra-prod-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - certbot-webroot:/var/www/certbot:ro
+      - certbot-certs:/etc/letsencrypt:ro
+    depends_on:
+      - frontend
+      - landing
+      - backend
+      - keycloak
+      - grafana
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+    networks:
+      - vetra-network
+
+  # ---------------------------------------------------------------------------
+  # Certbot (Let's Encrypt SSL)
+  # ---------------------------------------------------------------------------
+  certbot:
+    image: certbot/certbot:latest
+    container_name: vetra-prod-certbot
+    volumes:
+      - certbot-webroot:/var/www/certbot
+      - certbot-certs:/etc/letsencrypt
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done'"
+    networks:
+      - vetra-network
+
+  # ---------------------------------------------------------------------------
+  # Grafana (Observability Dashboard)
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:latest
+    container_name: vetra-prod-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_SERVER_ROOT_URL: https://vetra.vet.br/grafana
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - vetra-grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - tempo
+      - loki
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - vetra-network
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  vetra-network:
+    driver: bridge
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  vetra-postgres-data:
+  vetra-minio-data:
+  vetra-tempo-data:
+  vetra-prometheus-data:
+  vetra-loki-data:
+  vetra-grafana-data:
+  certbot-webroot:
+  certbot-certs:
