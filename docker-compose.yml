@@ -89,6 +89,29 @@ services:
       - vetra-network
 
   # ---------------------------------------------------------------------------
+  # Redis (Caching)
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: vetra-prod-redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru --save 60 1000
+    volumes:
+      - vetra-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 192M
+    networks:
+      - vetra-network
+
+  # ---------------------------------------------------------------------------
   # OpenTelemetry Collector
   # ---------------------------------------------------------------------------
   otel-collector:
@@ -199,6 +222,7 @@ services:
       KEYCLOAK_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      REDIS_URL: redis://redis:6379
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
@@ -332,5 +356,6 @@ volumes:
   vetra-prometheus-data:
   vetra-loki-data:
   vetra-grafana-data:
+  vetra-redis-data:
   certbot-webroot:
   certbot-certs:
