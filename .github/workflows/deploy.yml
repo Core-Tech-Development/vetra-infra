@@ -3,6 +3,7 @@ name: Deploy Infrastructure
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -16,5 +17,7 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             cd /opt/vetra
-            git pull origin main
+            git fetch origin main
+            git reset --hard origin/main
+            docker compose pull
             docker compose up -d --remove-orphans
