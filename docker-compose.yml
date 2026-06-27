@@ -50,6 +50,7 @@ services:
       KC_METRICS_ENABLED: "true"
       KC_HTTP_ENABLED: "true"
       KC_HOSTNAME_STRICT_HTTPS: "false"
+      JAVA_OPTS_KC_HEAP: -XX:MaxRAMPercentage=60 -XX:InitialRAMPercentage=40 -XX:ReservedCodeCacheSize=128m
     volumes:
       - ./keycloak:/opt/keycloak/data/import:ro
     depends_on:
@@ -234,7 +235,7 @@ services:
     restart: unless-stopped
     environment:
       QUARKUS_PROFILE: prod
-      JAVA_TOOL_OPTIONS: -Xms128m -Xmx384m -Djava.awt.headless=true
+      JAVA_TOOL_OPTIONS: -Xms256m -Xmx512m -XX:+UseG1GC -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=64m -XX:CompressedClassSpaceSize=64m -XX:+UseStringDeduplication -Djava.awt.headless=true
       # Database
       DB_REACTIVE_URL: postgresql://postgres:5432/${POSTGRES_DB:-vetra}
       DB_JDBC_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-vetra}
